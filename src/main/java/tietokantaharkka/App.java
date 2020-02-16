@@ -30,7 +30,6 @@ public class App {
 
     private static void quit(Scanner input) throws SQLException {
         input.close();
-        db.commit();
         disconnect();
         System.out.println("\nJärjestelmä suljettu.");
     }
@@ -92,7 +91,6 @@ public class App {
 
     private static void init(boolean withIndexes) throws SQLException { 
         Statement s = db.createStatement();
-        db.setAutoCommit(false);
 
         s.execute("pragma foreign_keys = on");
         s.execute(
@@ -103,8 +101,8 @@ public class App {
         s.execute(
             "create table if not exists Paketti ("+
             "id integer primary key, "+
-            "asiakasId integer not null, "+
-            "seuKoodi varchar(50) unique)"
+            "asiakasId integer not null references Asiakas, "+
+            "seuKoodi varchar(50) not null unique)"
         );
         s.execute(
             "create table if not exists AsiakasJaPaketti ("+
@@ -120,21 +118,23 @@ public class App {
             "create table if not exists Tapahtuma ("+
             "pakettiId integer not null references Paketti, "+
             "paikkaId integer not null references Paikka, "+
-            "kuvaus varchar(50), "+
-            "paivaJaAika datetime, "+
+            "kuvaus varchar(50) not null, "+
+            "paivaJaAika datetime not null, "+
             "primary key (pakettiId, paikkaId, kuvaus))"
         );
         
         if (withIndexes) {
-            s.execute("create index idx_seuKoodi on Paketti (seuKoodi)");
+            s.execute("create index idx_asiakasId on AsiakasJaPaketti (asiakasId)");
+            s.execute("create index idx_pakettiId on AsiakasJaPaketti (pakettiId)");
+            s.execute("create index idx_tapahtuma_paikkaId on Tapahtuma (paikkaId)");
         } 
 
         System.out.println("\nTalut luotu.\n");
     }
 
-    private static void addLocation(Scanner input) throws SQLException {
-        System.out.println("\nAnna paikan nimi:");
-        String nimi = input.nextLine();
+    private static void addLocation(Scanner input, String nimi) throws SQLException {
+            System.out.println("\nAnna paikan nimi:");
+            nimi = input.nextLine();
 
         try {
             PreparedStatement p = db.prepareStatement("insert into Paikka(nimi) values(?)");
@@ -235,7 +235,7 @@ public class App {
 
         try {
             PreparedStatement p = db.prepareStatement(
-                "select t.paivaJaAika, t.kuvaus "+
+                "select p.seuKoodi, t.paivaJaAika, t.kuvaus "+
                 "from Tapahtuma t, Paketti p "+
                 "where p.id = ?"
             );
@@ -243,7 +243,7 @@ public class App {
             ResultSet rows = p.executeQuery();
             System.out.println("Päivämäärä ja aika|Kuvaus");
             while (rows.next()) {
-                System.out.println(rows.getString("paivaJaAika") + "|" + rows.getString("kuvaus"));
+                System.out.println(rows.getString("seuKoodi") + "|" + rows.getString("paivaJaAika") + "|" + rows.getString("kuvaus"));
             }
         } catch (Exception e) {
             System.out.println(e);
@@ -301,19 +301,78 @@ public class App {
     }
 
     private static void benchmark() throws SQLException {
+
+        Statement s = db.createStatement();
+
+        String p = "p";
+        String a = "a";
+        String sk = "sk";
+        String k = "k";
+        int j = 1;
+
+        s.execute("begin transaction");
+        
         long start = System.currentTimeMillis();
-
-        PreparedStatement p = db.prepareStatement("begin transaction");
-        p.execute();
-        p.clearParameters();
-        String nimi = "peksi";
-
-
+        for (int i = 1; i < 1001; i++) {
+            s.execute("insert into Paikka(nimi) values('"+p+i+"')");
+        }
         long stop = System.currentTimeMillis();
-    }
+        long result = stop-start; System.out.println("\nPaikat " + result);
+        start = 0; stop = 0;
 
-    // TODO: virheenkäsittelyt kaikille!
-    // paketilta id pois ja seuKoodi yksilöiväksi. Samoin Asiakkaalle nimi. Samoin Paikalle nimi.
+        start = System.currentTimeMillis();
+        for (int i = 1; i < 1001; i++) {
+            s.execute("insert into Asiakas(nimi) values('"+a+i+"')");
+        }
+        stop = System.currentTimeMillis();
+        result = stop-start; System.out.println("Asiakkaat " + result);
+        start = 0; stop = 0;
+
+        start = System.currentTimeMillis();
+        for (int i = 1; i < 1001; i++) {
+            s.execute("insert into Paketti(asiakasId, seuKoodi) values('"+i+"', '"+sk+i+"')");
+            s.execute("insert into AsiakasJaPaketti(pakettiId, asiakasId) values('"+i+"', '"+i+"')");
+        }
+        stop = System.currentTimeMillis();
+        result = stop-start; System.out.println("Paketit " + result);
+        start = 0; stop = 0;
+
+        start = System.currentTimeMillis();
+        for (int i = 1; i < 1000001; i++) {
+            if (j > 1000) j = 1;
+            s.execute("insert into Tapahtuma(pakettiId, paikkaId, kuvaus, paivaJaAika) values('"+j+"', '"+j+"', '"+i+k+"', datetime('now'))");
+            j++;
+        }
+        s.execute("commit");
+        stop = System.currentTimeMillis();
+        result = stop-start; System.out.println("Tapahtumat " + result);
+        start = 0; stop = 0;
+
+        start = System.currentTimeMillis();
+        for (int i = 1; i < 1001; i++) {
+            s.execute(
+                "select ap.pakettiId, count(*) as lkm "+
+                "from AsiakasJaPaketti ap left join Tapahtuma t on ap.pakettiId = t.pakettiId "+
+                "where ap.asiakasId = '"+10+"' "+
+                "group by t.pakettiId"
+            );
+        }
+        stop = System.currentTimeMillis();
+        result = stop-start; System.out.println("Asiakkaan paketit " + result);
+        start = 0; stop = 0;
+
+        start = System.currentTimeMillis();
+        for (int i = 1; i < 1001; i++) {
+            s.execute(
+                "select t.paivaJaAika, t.kuvaus "+
+                "from Tapahtuma t, Paketti p "+
+                "where p.id = '"+4+"'"
+            );
+        }
+        stop = System.currentTimeMillis();
+        result = stop-start; System.out.println("Paketin tapahtumat " + result);
+        start = 0; stop = 0;
+    }
 
     public static void main(String[] args) throws SQLException {
         connect();
@@ -333,7 +392,7 @@ public class App {
 
                 case "1": init(false); break;
 
-                case "2": addLocation(input); break;
+                case "2": addLocation(input, inputString); break;
 
                 case "3": addCustomer(input); break;
 
